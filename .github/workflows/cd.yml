@@ -12,6 +12,8 @@ concurrency: production
 
 jobs:
   deploy:
+    # Só corre depois de configuradas as variables do repositório (ver README, secção CI/CD).
+    if: ${{ vars.AWS_REGION != '' && vars.EKS_CLUSTER_NAME != '' && vars.ACM_CERTIFICATE_ARN != '' }}
     runs-on: ubuntu-latest
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
