@@ -1,0 +1,66 @@
+name: cd
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency: production
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+      ACM_CERTIFICATE_ARN: ${{ vars.ACM_CERTIFICATE_ARN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      - name: Build e push da imagem da API
+        run: |
+          docker build -t $ECR_REGISTRY/desafio/api:$GITHUB_SHA app/api
+          docker push $ECR_REGISTRY/desafio/api:$GITHUB_SHA
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+
+      - name: Build e push da imagem do frontend
+        run: |
+          docker build -t $ECR_REGISTRY/desafio/frontend:$GITHUB_SHA app/frontend
+          docker push $ECR_REGISTRY/desafio/frontend:$GITHUB_SHA
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+
+      - name: Instalar kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Configurar kubectl
+        run: aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+
+      - name: Deploy no EKS
+        working-directory: deploy/k8s/overlays/prod
+        run: |
+          kustomize edit set image desafio/api=$ECR_REGISTRY/desafio/api:$GITHUB_SHA
+          kustomize edit set image desafio/frontend=$ECR_REGISTRY/desafio/frontend:$GITHUB_SHA
+          sed -i "s|REPLACE_WITH_ACM_CERT_ARN|$ACM_CERTIFICATE_ARN|" ../../base/ingress.yaml
+          kubectl apply -k .
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+
+      - name: Aguardar rollout
+        run: |
+          kubectl -n app rollout status deployment/api --timeout=240s
+          kubectl -n app rollout status deployment/frontend --timeout=240s
